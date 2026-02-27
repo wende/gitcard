@@ -16,8 +16,17 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function sectionImageLink(href, label) {
+  return `<a class="panel-link" href="${href}" target="_blank" rel="noreferrer noopener" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07L11 4"></path>
+      <path d="M14 11a5 5 0 0 0-7.07 0L4.1 13.83a5 5 0 0 0 7.07 7.07L13 19"></path>
+    </svg>
+  </a>`;
+}
+
 export default async function handler(req, res) {
-  const sectionVersion = '11';
+  const sectionVersion = '13';
   const username = coerceParam(req.query.username);
   const format = coerceParam(req.query.format).toLowerCase();
 
@@ -46,6 +55,10 @@ export default async function handler(req, res) {
     day: 'numeric',
     year: 'numeric',
   });
+  const statsLink = sectionImageLink(`${baseUrl}/stats.png`, 'Open stats panel image');
+  const activityLink = sectionImageLink(`${baseUrl}/activity.png`, 'Open contribution activity image');
+  const languagesLink = sectionImageLink(`${baseUrl}/languages.png`, 'Open language distribution image');
+  const repositoriesLink = sectionImageLink(`${baseUrl}/repositories.png`, 'Open most starred repositories image');
 
   const html = `<!doctype html>
 <html lang="en">
@@ -58,22 +71,30 @@ export default async function handler(req, res) {
       .wrap{max-width:896px;margin:0 auto;background:#f8f9fa;border:1px solid rgba(209,213,219,.7);border-radius:40px;padding:24px;box-shadow:0 12px 40px -12px rgba(0,0,0,.1)}
       .charts{display:grid;grid-template-columns:1fr;gap:16px;margin-top:16px}
       img.panel{display:block;width:100%;height:auto;border:0;background:transparent}
+      .panel-shell{position:relative}
+      .panel-link{position:absolute;top:10px;right:10px;width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border:1px solid #e5e7eb;border-radius:999px;background:#fff;color:#94a3b8;text-decoration:none;box-shadow:0 1px 2px rgba(15,23,42,.06);z-index:3}
+      .panel-link:hover{background:#f8fafc;color:#64748b}
+      .panel-link svg{width:14px;height:14px}
       @media (min-width:900px){.charts{grid-template-columns:1fr 1fr}}
     </style>
   </head>
   <body>
     <main class="wrap">
-      <section>
+      <section class="panel-shell">
+        ${statsLink}
         <img class="panel" src="${baseUrl}/stats.png?v=${sectionVersion}" alt="Stats panel" />
       </section>
-      <section style="margin-top:16px;">
+      <section class="panel-shell" style="margin-top:16px;">
+        ${activityLink}
         <img class="panel" src="${baseUrl}/activity.png?v=${sectionVersion}" alt="Contribution activity panel" />
       </section>
       <section class="charts">
-        <article>
+        <article class="panel-shell">
+          ${languagesLink}
           <img class="panel" src="${baseUrl}/languages.png?v=${sectionVersion}" alt="Language distribution panel" />
         </article>
-        <article>
+        <article class="panel-shell">
+          ${repositoriesLink}
           <img class="panel" src="${baseUrl}/repositories.png?v=${sectionVersion}" alt="Most starred repositories panel" />
         </article>
       </section>

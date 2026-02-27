@@ -3,10 +3,12 @@ import {
   SECTION_TTL_SECONDS,
   SECTION_STALE_SECONDS,
   createRenderContext,
+  renderFullCardPng,
   renderPanelsPng,
   renderSectionPng,
   setVercelCacheHeaders,
   coerceParam,
+  isUserNotFoundError,
 } from '../../_lib/card-renderer.js';
 
 export default async function handler(req, res) {
@@ -29,6 +31,29 @@ export default async function handler(req, res) {
       res.status(200).send(rendered.png);
     } catch (error) {
       console.error(`Error generating section ${sectionId}:`, error);
+      if (isUserNotFoundError(error)) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+      res.status(500).json({ error: 'Failed to generate section image.' });
+    }
+    return;
+  }
+
+  if (sectionId === 'full') {
+    try {
+      const context = await createRenderContext(username);
+      const rendered = await renderFullCardPng(context);
+
+      res.setHeader('Content-Type', 'image/png');
+      setVercelCacheHeaders(res, SECTION_TTL_SECONDS, SECTION_STALE_SECONDS);
+      res.status(200).send(rendered.png);
+    } catch (error) {
+      console.error(`Error generating section ${sectionId}:`, error);
+      if (isUserNotFoundError(error)) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
       res.status(500).json({ error: 'Failed to generate section image.' });
     }
     return;
@@ -38,7 +63,7 @@ export default async function handler(req, res) {
   if (!section) {
     res.status(404).json({
       error: 'Unknown section id',
-      availableSections: [...SECTION_DEFINITIONS.map((item) => item.id), 'panels'],
+      availableSections: [...SECTION_DEFINITIONS.map((item) => item.id), 'panels', 'full'],
     });
     return;
   }
@@ -52,6 +77,10 @@ export default async function handler(req, res) {
     res.status(200).send(rendered.png);
   } catch (error) {
     console.error(`Error generating section ${sectionId}:`, error);
+    if (isUserNotFoundError(error)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
     res.status(500).json({ error: 'Failed to generate section image.' });
   }
 }

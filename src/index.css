@@ -4,19 +4,19 @@
 @tailwind components;
 @tailwind utilities;
 
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   font-family: 'Inter', sans-serif;
-  background-color: #e5e7eb;
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  background: #e5e7eb;
   min-height: 100vh;
-  padding: 40px 20px;
+  color: #0f172a;
 }
 
 #root {
+  min-height: 100vh;
   width: 100%;
-  display: flex;
-  justify-content: center;
 }

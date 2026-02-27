@@ -5,6 +5,7 @@ import {
   setVercelCacheHeaders,
   getRequestOrigin,
   coerceParam,
+  isUserNotFoundError,
 } from '../_lib/card-renderer.js';
 
 function escapeHtml(value) {
@@ -16,8 +17,17 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function sectionImageLink(href, label) {
+  return `<a class="panel-link" href="${href}" target="_blank" rel="noreferrer noopener" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07L11 4"></path>
+      <path d="M14 11a5 5 0 0 0-7.07 0L4.1 13.83a5 5 0 0 0 7.07 7.07L13 19"></path>
+    </svg>
+  </a>`;
+}
+
 export default async function handler(req, res) {
-  const sectionVersion = '11';
+  const sectionVersion = '14';
   const username = coerceParam(req.query.username);
   const format = coerceParam(req.query.format).toLowerCase();
 
@@ -51,9 +61,16 @@ export default async function handler(req, res) {
     const commits = data.stats?.commitsLastYear;
     const commitsLabel = typeof commits === 'number' ? commits.toLocaleString() : escapeHtml(commits ?? 'N/A');
     const stars = Number(data.stats?.totalStars || 0).toLocaleString();
-    const repoCount = Number((data.repos || []).length || 0).toLocaleString();
+    const prs = data.stats?.prsLastYear;
+    const prsLabel = typeof prs === 'number' ? prs.toLocaleString() : escapeHtml(prs ?? 'N/A');
     const followers = Number(data.profile?.followers || 0).toLocaleString();
     const generatedDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const headerLink = sectionImageLink(`${baseUrl}/header.png`, 'Open header panel image');
+    const statsLink = sectionImageLink(`${baseUrl}/stats.png`, 'Open stats panel image');
+    const activityLink = sectionImageLink(`${baseUrl}/activity.png`, 'Open contribution activity image');
+    const languagesLink = sectionImageLink(`${baseUrl}/languages.png`, 'Open language distribution image');
+    const repositoriesLink = sectionImageLink(`${baseUrl}/repositories.png`, 'Open most starred repositories image');
+    const panelsLink = sectionImageLink(`${baseUrl}/panels.png`, 'Open panels image');
 
     const html = `<!doctype html>
 <html lang="en">
@@ -74,6 +91,13 @@ export default async function handler(req, res) {
       .stat-value{font-size:32px;line-height:1.1;color:#1f2937;font-weight:300}
       .title{font-size:14px;color:#1f2937;font-weight:600;letter-spacing:.02em;margin:0 0 10px}
       img.chart{display:block;width:100%;height:auto;border:0;background:transparent}
+      .panel-shell{position:relative}
+      .panel-link{position:absolute;top:10px;right:10px;width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border:1px solid #e5e7eb;border-radius:999px;background:#fff;color:#94a3b8;text-decoration:none;box-shadow:0 1px 2px rgba(15,23,42,.06);z-index:3}
+      .panel-link:hover{background:#f8fafc;color:#64748b}
+      .panel-link svg{width:14px;height:14px}
+      .bookmark-wrap{position:relative;z-index:6;display:flex;justify-content:center;margin-top:22px;margin-bottom:-2px}
+      .bookmark-tab{height:40px;min-width:78px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;background:#fff;border:1px solid #f3f4f6;border-bottom:none;border-radius:16px 16px 0 0;box-shadow:none}
+      .bookmark-tab .panel-link{position:static;width:28px;height:28px}
       @media (min-width:900px){
         .stats{grid-template-columns:repeat(4,minmax(0,1fr))}
         .charts{grid-template-columns:1fr 1fr}
@@ -82,7 +106,8 @@ export default async function handler(req, res) {
   </head>
   <body>
     <main class="wrap">
-      <section class="box" style="display:flex;justify-content:space-between;gap:20px;align-items:flex-start;flex-wrap:wrap;">
+      <section class="box panel-shell" style="display:flex;justify-content:space-between;gap:20px;align-items:flex-start;flex-wrap:wrap;">
+        ${headerLink}
         <div style="display:flex;gap:16px;min-width:320px;">
           <img src="${avatarUrl}" alt="${profileLogin}" width="96" height="96" style="border-radius:999px;border:1px solid #f3f4f6;object-fit:cover;" />
           <div>
@@ -97,22 +122,32 @@ export default async function handler(req, res) {
         </div>
       </section>
 
-      <section class="box stats" style="margin-top:16px;">
+      <div class="bookmark-wrap">
+        <div class="bookmark-tab">
+          ${panelsLink}
+        </div>
+      </div>
+
+      <section class="box stats panel-shell" style="margin-top:0;">
+        ${statsLink}
         <div><div class="stat-label">Contributions</div><div class="stat-value">${commitsLabel}</div></div>
         <div><div class="stat-label">Total Stars</div><div class="stat-value">${stars}</div></div>
-        <div><div class="stat-label">Repositories</div><div class="stat-value">${repoCount}</div></div>
+        <div><div class="stat-label">PRs</div><div class="stat-value">${prsLabel}</div></div>
         <div><div class="stat-label">Followers</div><div class="stat-value">${followers}</div></div>
       </section>
 
-      <section style="margin-top:16px;">
+      <section class="panel-shell" style="margin-top:16px;">
+        ${activityLink}
         <img class="chart" src="${baseUrl}/activity.png?v=${sectionVersion}" alt="Contribution activity chart" />
       </section>
 
       <section class="charts" style="margin-top:16px;">
-        <article>
+        <article class="panel-shell">
+          ${languagesLink}
           <img class="chart" src="${baseUrl}/languages.png?v=${sectionVersion}" alt="Language distribution chart" />
         </article>
-        <article>
+        <article class="panel-shell">
+          ${repositoriesLink}
           <img class="chart" src="${baseUrl}/repositories.png?v=${sectionVersion}" alt="Most starred repositories chart" />
         </article>
       </section>
@@ -130,6 +165,10 @@ export default async function handler(req, res) {
     res.status(200).send(html);
   } catch (error) {
     console.error('Error generating card page:', error);
+    if (isUserNotFoundError(error)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
     res.status(500).json({ error: 'Failed to generate card page. User may not exist or rate limits exceeded.' });
   }
 }

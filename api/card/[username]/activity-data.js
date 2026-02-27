@@ -4,6 +4,7 @@ import {
   MANIFEST_TTL_SECONDS,
   MANIFEST_STALE_SECONDS,
   coerceParam,
+  isUserNotFoundError,
 } from '../../_lib/card-renderer.js';
 
 export default async function handler(req, res) {
@@ -27,6 +28,10 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error(`Error fetching activity data for ${username}:`, error);
+    if (isUserNotFoundError(error)) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
     res.status(500).json({ error: 'Failed to fetch activity data.' });
   }
 }

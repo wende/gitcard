@@ -41,9 +41,14 @@ export const SECTION_TTL_SECONDS = 86400;
 export const SECTION_STALE_SECONDS = 86400;
 export const MANIFEST_TTL_SECONDS = 900;
 export const MANIFEST_STALE_SECONDS = 900;
+const DATA_CACHE_TTL_MS = 15 * 60 * 1000;
 
 let fontCache = null;
 let fontPromise = null;
+const cardDataCache = new Map();
+const cardDataInflight = new Map();
+const renderContextCache = new Map();
+const renderContextInflight = new Map();
 
 function e(type, props, ...children) {
   const flat = children.flat(Infinity).filter((c) => c != null && c !== false);
@@ -62,6 +67,27 @@ export function getSectionDefinition(id) {
 
 function toIsoDate(date) {
   return date.toISOString().split('T')[0];
+}
+
+function getCacheKey(username) {
+  return String(username || '').trim().toLowerCase();
+}
+
+function getCachedValue(cacheMap, key) {
+  const entry = cacheMap.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    cacheMap.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setCachedValue(cacheMap, key, value, ttlMs = DATA_CACHE_TTL_MS) {
+  cacheMap.set(key, {
+    value,
+    expiresAt: Date.now() + ttlMs,
+  });
 }
 
 function normalizeRenderableText(value) {
@@ -116,17 +142,59 @@ function buildDailySeries(fromDate, toDate, countsByDate = new Map()) {
   return series;
 }
 
-async function fetchContributionSeries(username, fromDate, toDate, token) {
-  const fallback = buildDailySeries(fromDate, toDate);
+async function imageToDataUri(url) {
+  const response = await fetch(url);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const type = response.headers.get('content-type') || 'image/png';
+  return `data:${type};base64,${buffer.toString('base64')}`;
+}
 
+async function fetchGitHubData(username, token) {
   if (!token) {
-    return fallback;
+    throw new Error('Missing GitHub token');
   }
 
+  const activityTo = new Date();
+  activityTo.setUTCHours(23, 59, 59, 999);
+  const activityFrom = new Date(activityTo);
+  activityFrom.setUTCDate(activityFrom.getUTCDate() - 364);
+  activityFrom.setUTCHours(0, 0, 0, 0);
   const query = `
-    query($login: String!, $from: DateTime!, $to: DateTime!) {
+    query($login: String!, $from: DateTime!, $to: DateTime!, $repoFirst: Int!) {
       user(login: $login) {
+        login
+        name
+        bio
+        company
+        location
+        avatarUrl
+        twitterUsername
+        followers {
+          totalCount
+        }
+        repositories(privacy: PUBLIC, ownerAffiliations: OWNER) {
+          totalCount
+        }
+        sampledRepositories: repositories(
+          first: $repoFirst
+          privacy: PUBLIC
+          ownerAffiliations: OWNER
+          orderBy: { field: PUSHED_AT, direction: DESC }
+        ) {
+          nodes {
+            name
+            stargazerCount
+            forkCount
+            primaryLanguage {
+              name
+            }
+            pushedAt
+          }
+        }
         contributionsCollection(from: $from, to: $to) {
+          totalCommitContributions
+          totalPullRequestContributions
+          totalIssueContributions
           contributionCalendar {
             weeks {
               contributionDays {
@@ -152,8 +220,9 @@ async function fetchContributionSeries(username, fromDate, toDate, token) {
       query,
       variables: {
         login: username,
-        from: fromDate.toISOString(),
-        to: toDate.toISOString(),
+        from: activityFrom.toISOString(),
+        to: activityTo.toISOString(),
+        repoFirst: 100,
       },
     }),
   });
@@ -164,14 +233,50 @@ async function fetchContributionSeries(username, fromDate, toDate, token) {
 
   const payload = await response.json();
   if (payload.errors?.length) {
-    throw new Error(payload.errors[0].message || 'GraphQL contribution query failed');
+    const isMissingUser = payload.errors.some((error) =>
+      typeof error?.message === 'string' && error.message.includes('Could not resolve to a User'),
+    );
+    if (isMissingUser) {
+      throw new Error('User not found');
+    }
+    throw new Error(payload.errors[0].message || 'GraphQL query failed');
   }
 
-  const days = payload?.data?.user?.contributionsCollection?.contributionCalendar?.weeks
-    ?.flatMap((week) => week.contributionDays || []) || [];
+  const user = payload?.data?.user;
+  if (!user) {
+    throw new Error('User not found');
+  }
 
-  const fromIso = toIsoDate(fromDate);
-  const toIso = toIsoDate(toDate);
+  const profile = {
+    login: user.login || username,
+    name: user.name || '',
+    bio: user.bio || '',
+    company: user.company || '',
+    location: user.location || '',
+    avatar_url: user.avatarUrl || '',
+    twitter_username: user.twitterUsername || '',
+    followers: Number(user.followers?.totalCount || 0),
+  };
+
+  const repos = (user.sampledRepositories?.nodes || [])
+    .map((repo) => ({
+      name: repo?.name || '',
+      stargazers_count: Number(repo?.stargazerCount || 0),
+      forks_count: Number(repo?.forkCount || 0),
+      language: repo?.primaryLanguage?.name || 'Unknown',
+      pushed_at: repo?.pushedAt || null,
+    }))
+    .sort((a, b) => {
+      const aTime = a.pushed_at ? new Date(a.pushed_at).getTime() : 0;
+      const bTime = b.pushed_at ? new Date(b.pushed_at).getTime() : 0;
+      return bTime - aTime;
+    });
+
+  const contributions = user.contributionsCollection || {};
+  const days = contributions?.contributionCalendar?.weeks
+    ?.flatMap((week) => week.contributionDays || []) || [];
+  const fromIso = toIsoDate(activityFrom);
+  const toIso = toIsoDate(activityTo);
   const countsByDate = new Map();
 
   for (const day of days) {
@@ -180,79 +285,19 @@ async function fetchContributionSeries(username, fromDate, toDate, token) {
     countsByDate.set(day.date, Number(day.contributionCount || 0));
   }
 
-  return buildDailySeries(fromDate, toDate, countsByDate);
-}
-
-async function imageToDataUri(url) {
-  const response = await fetch(url);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const type = response.headers.get('content-type') || 'image/png';
-  return `data:${type};base64,${buffer.toString('base64')}`;
-}
-
-async function fetchGitHubData(username, token) {
-  const headers = {
-    'User-Agent': 'GitMetrics-Image-Generator',
-    'Accept': 'application/vnd.github+json',
-  };
-
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  const userRes = await fetch(`https://api.github.com/users/${username}`, { headers });
-  if (userRes.status === 404) throw new Error('User not found');
-  if (!userRes.ok) throw new Error('GitHub API Error');
-  const profile = await userRes.json();
-
-  const reposRes = await fetch(`https://api.github.com/users/${username}/repos?per_page=100&sort=pushed`, { headers });
-  const repos = reposRes.ok ? await reposRes.json() : [];
-
-  const activityTo = new Date();
-  activityTo.setUTCHours(23, 59, 59, 999);
-  const activityFrom = new Date(activityTo);
-  activityFrom.setUTCDate(activityFrom.getUTCDate() - 364);
-  activityFrom.setUTCHours(0, 0, 0, 0);
-  const dateString = toIsoDate(activityFrom);
-
-  let commitsLastYear = 'N/A';
-  let prsLastYear = 'N/A';
-  let issuesLastYear = 'N/A';
-  let contributionSeries = buildDailySeries(activityFrom, activityTo);
-
-  try {
-    const [commitsRes, prsRes, issuesRes] = await Promise.all([
-      fetch(`https://api.github.com/search/commits?q=${encodeURIComponent(`author:${username} committer-date:>${dateString}`)}`, {
-        headers: {
-          ...headers,
-          'Accept': 'application/vnd.github+json',
-        },
-      }),
-      fetch(`https://api.github.com/search/issues?q=${encodeURIComponent(`author:${username} type:pr created:>${dateString}`)}`, { headers }),
-      fetch(`https://api.github.com/search/issues?q=${encodeURIComponent(`author:${username} type:issue created:>${dateString}`)}`, { headers }),
-    ]);
-
-    if (commitsRes.ok) commitsLastYear = (await commitsRes.json()).total_count;
-    if (prsRes.ok) prsLastYear = (await prsRes.json()).total_count;
-    if (issuesRes.ok) issuesLastYear = (await issuesRes.json()).total_count;
-  } catch (_) {
-    // Keep default N/A values if these queries fail.
-  }
-
-  try {
-    contributionSeries = await fetchContributionSeries(username, activityFrom, activityTo, token);
-  } catch (error) {
-    console.warn(`Failed to fetch contribution calendar for ${username}: ${error.message}`);
-  }
+  const contributionSeries = buildDailySeries(activityFrom, activityTo, countsByDate);
+  const commitsLastYear = Number(contributions.totalCommitContributions || 0);
+  const prsLastYear = Number(contributions.totalPullRequestContributions || 0);
+  const issuesLastYear = Number(contributions.totalIssueContributions || 0);
+  const publicRepoTotal = Number(user.repositories?.totalCount || 0);
 
   const totalStars = repos.reduce((sum, repo) => sum + repo.stargazers_count, 0);
   const totalForks = repos.reduce((sum, repo) => sum + repo.forks_count, 0);
 
   const langCounts = {};
   repos.forEach((repo) => {
-    if (repo.language && !repo.fork) {
-      langCounts[repo.language] = (langCounts[repo.language] || 0) + 1;
-    }
+    const language = repo.language || 'Unknown';
+    langCounts[language] = (langCounts[language] || 0) + 1;
   });
 
   return {
@@ -265,6 +310,7 @@ async function fetchGitHubData(username, token) {
       commitsLastYear,
       prsLastYear,
       issuesLastYear,
+      publicRepoTotal,
     },
     contributionSeries,
   };
@@ -346,7 +392,7 @@ function buildActivityChartModel(timeSeries) {
 }
 
 function buildDoughnutDataUri(langCounts) {
-  const entries = Object.entries(langCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const entries = Object.entries(langCounts || {});
   const total = entries.reduce((sum, [, value]) => sum + value, 0);
   if (total === 0) return null;
 
@@ -455,11 +501,11 @@ function buildHeaderSection(profile, avatarUri) {
   );
 }
 
-function buildStatsSection(profile, repos, stats) {
+function buildStatsSection(profile, stats) {
   const cells = [
     { label: 'Contributions', value: stats.commitsLastYear },
     { label: 'Total Stars', value: stats.totalStars },
-    { label: 'Repositories', value: repos.length },
+    { label: 'PRs', value: stats.prsLastYear },
     { label: 'Followers', value: profile.followers },
   ];
 
@@ -546,14 +592,22 @@ function buildActivitySection(timeSeries) {
 }
 
 function buildLanguageSection(stats) {
-  const langEntries = Object.entries(stats.langCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const langTotal = langEntries.reduce((sum, [, value]) => sum + value, 0);
-  const doughnutUri = langTotal > 0 ? buildDoughnutDataUri(stats.langCounts) : null;
+  const allLangEntries = Object.entries(stats.langCounts || {}).sort((a, b) => b[1] - a[1]);
+  const sampledTotal = allLangEntries.reduce((sum, [, value]) => sum + value, 0);
+  const centerRepoTotal = Number.isFinite(Number(stats.publicRepoTotal))
+    ? Number(stats.publicRepoTotal)
+    : sampledTotal;
+  const topEntries = allLangEntries.slice(0, 5);
+  const topTotal = topEntries.reduce((sum, [, value]) => sum + value, 0);
+  const otherCount = Math.max(sampledTotal - topTotal, 0);
+  const langEntries = otherCount > 0 ? [...topEntries, ['Other', otherCount]] : topEntries;
+  const doughnutLangCounts = Object.fromEntries(langEntries);
+  const doughnutUri = sampledTotal > 0 ? buildDoughnutDataUri(doughnutLangCounts) : null;
 
   return e('div', { style: { ...boxStyle(), height: LOWER_PANEL_HEIGHT } },
     e('span', { style: { fontSize: '14px', fontWeight: 500, color: '#1f2937', letterSpacing: '0.02em', marginBottom: '24px' } }, 'Language Distribution'),
     e('div', { style: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' } },
-      langEntries.length > 0
+      sampledTotal > 0
         ? e('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '26px', width: '100%' } },
             e('div', { style: { display: 'flex', position: 'relative', width: '144px', height: '144px', flexShrink: 0 } },
               e('img', { src: doughnutUri, width: 144, height: 144 }),
@@ -570,7 +624,7 @@ function buildLanguageSection(stats) {
                   height: '144px',
                 },
               },
-              e('span', { style: { fontSize: '24px', fontWeight: 300, color: '#1f2937' } }, String(langTotal)),
+              e('span', { style: { fontSize: '24px', fontWeight: 300, color: '#1f2937' } }, String(centerRepoTotal)),
               e('span', { style: { fontSize: '10px', fontWeight: 500, color: '#9ca3af', letterSpacing: '0.08em', textTransform: 'uppercase' } }, 'Repos'),
               ),
             ),
@@ -588,7 +642,7 @@ function buildLanguageSection(stats) {
                     }),
                     e('span', { style: { color: '#4b5563' } }, normalizeRenderableText(name) || 'Unknown'),
                   ),
-                  e('span', { style: { color: '#9ca3af', fontWeight: 300 } }, `${Math.round((value / langTotal) * 100)}%`),
+                  e('span', { style: { color: '#9ca3af', fontWeight: 300 } }, `${Math.round((value / sampledTotal) * 100)}%`),
                 ),
               ),
             ),
@@ -720,7 +774,7 @@ function buildSectionNode(sectionId, context) {
     case 'header':
       return buildHeaderSection(context.profile, context.avatarUri);
     case 'stats':
-      return buildStatsSection(context.profile, context.repos, context.stats);
+      return buildStatsSection(context.profile, context.stats);
     case 'activity':
       return buildActivitySection(context.activitySeries);
     case 'languages':
@@ -774,27 +828,64 @@ async function loadFonts() {
 }
 
 export async function createRenderContext(username) {
-  const { profile, repos, stats, activitySeries } = await fetchCardData(username);
-  const avatarUri = await imageToDataUri(profile.avatar_url);
+  const cacheKey = getCacheKey(username);
+  const cached = getCachedValue(renderContextCache, cacheKey);
+  if (cached) return cached;
 
-  return {
-    profile,
-    repos,
-    stats,
-    avatarUri,
-    activitySeries,
-  };
+  const inFlight = renderContextInflight.get(cacheKey);
+  if (inFlight) return inFlight;
+
+  const promise = (async () => {
+    const { profile, repos, stats, activitySeries } = await fetchCardData(username);
+    const avatarUri = await imageToDataUri(profile.avatar_url);
+
+    const context = {
+      profile,
+      repos,
+      stats,
+      avatarUri,
+      activitySeries,
+    };
+
+    setCachedValue(renderContextCache, cacheKey, context);
+    return context;
+  })();
+
+  renderContextInflight.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    renderContextInflight.delete(cacheKey);
+  }
 }
 
 export async function fetchCardData(username) {
+  const cacheKey = getCacheKey(username);
+  const cached = getCachedValue(cardDataCache, cacheKey);
+  if (cached) return cached;
+
+  const inFlight = cardDataInflight.get(cacheKey);
+  if (inFlight) return inFlight;
+
   const token = process.env.GITHUB_TOKEN?.trim() || null;
-  const { profile, repos, stats, contributionSeries } = await fetchGitHubData(username, token);
-  return {
-    profile,
-    repos,
-    stats,
-    activitySeries: contributionSeries,
-  };
+  const promise = (async () => {
+    const { profile, repos, stats, contributionSeries } = await fetchGitHubData(username, token);
+    const data = {
+      profile,
+      repos,
+      stats,
+      activitySeries: contributionSeries,
+    };
+    setCachedValue(cardDataCache, cacheKey, data);
+    return data;
+  })();
+
+  cardDataInflight.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    cardDataInflight.delete(cacheKey);
+  }
 }
 
 export async function renderSectionPng(sectionId, context) {
@@ -925,6 +1016,59 @@ export async function renderPanelsPng(context) {
   };
 }
 
+export async function renderFullCardPng(context) {
+  const gap = 32;
+  const [header, panels] = await Promise.all([
+    renderSectionPng('header', context),
+    renderPanelsPng(context),
+  ]);
+
+  const width = Math.max(header.width, panels.width);
+  const height = header.height + gap + panels.height;
+  const toDataUri = (buffer) => `data:image/png;base64,${buffer.toString('base64')}`;
+
+  const node = e('div', {
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      width: `${width}px`,
+      height: `${height}px`,
+      fontFamily: FONT_STACK,
+      backgroundColor: 'transparent',
+    },
+  },
+  e('img', {
+    src: toDataUri(header.png),
+    width: header.width,
+    height: header.height,
+    style: { width: `${header.width}px`, height: `${header.height}px`, alignSelf: 'center' },
+  }),
+  e('img', {
+    src: toDataUri(panels.png),
+    width: panels.width,
+    height: panels.height,
+    style: { width: `${panels.width}px`, height: `${panels.height}px`, alignSelf: 'center', marginTop: `${gap}px` },
+  }),
+  );
+
+  const fonts = await loadFonts();
+  const svg = await satori(node, {
+    width,
+    height,
+    fonts,
+  });
+
+  const renderer = new Resvg(svg, { background: 'transparent' });
+  const rendered = renderer.render();
+  return {
+    id: 'full',
+    label: 'Full Card',
+    width: rendered.width,
+    height: rendered.height,
+    png: Buffer.from(rendered.asPng()),
+  };
+}
+
 export function setVercelCacheHeaders(res, ttlSeconds, staleSeconds) {
   const edgePolicy = `public, max-age=${ttlSeconds}, stale-while-revalidate=${staleSeconds}`;
   res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
@@ -942,4 +1086,8 @@ export function getRequestOrigin(req) {
 export function coerceParam(value) {
   if (Array.isArray(value)) return value[0] || '';
   return value || '';
+}
+
+export function isUserNotFoundError(error) {
+  return error?.message === 'User not found';
 }
