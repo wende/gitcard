@@ -27,7 +27,7 @@ function sectionImageLink(href, label) {
 }
 
 export default async function handler(req, res) {
-  const sectionVersion = '14';
+  const sectionVersion = '15';
   const username = coerceParam(req.query.username);
   const format = coerceParam(req.query.format).toLowerCase();
 
@@ -90,14 +90,21 @@ export default async function handler(req, res) {
       .stat-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#9ca3af;font-weight:600}
       .stat-value{font-size:32px;line-height:1.1;color:#1f2937;font-weight:300}
       .title{font-size:14px;color:#1f2937;font-weight:600;letter-spacing:.02em;margin:0 0 10px}
-      img.chart{display:block;width:100%;height:auto;border:0;background:transparent}
+      img.chart{display:block;width:100%;height:auto;border:0;background:transparent;opacity:0;transition:opacity .22s ease;position:relative;z-index:1}
       .panel-shell{position:relative}
+      .panel-shell[data-loading="true"]{min-height:var(--panel-min-height,220px)}
+      .panel-shell.is-loaded img.chart{opacity:1}
+      .panel-loader{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:transparent;z-index:2;pointer-events:none}
+      .panel-shell.is-loaded .panel-loader,.panel-shell.is-error .panel-loader{display:none}
+      .spinner{width:26px;height:26px;border:2px solid #e2e8f0;border-top-color:#94a3b8;border-radius:999px;animation:spin .75s linear infinite}
+      .panel-shell.is-error::after{content:'Failed to load';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#94a3b8;font-size:12px;font-weight:500;letter-spacing:.02em}
       .panel-link{position:absolute;top:10px;right:10px;width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border:1px solid #e5e7eb;border-radius:999px;background:#fff;color:#94a3b8;text-decoration:none;box-shadow:0 1px 2px rgba(15,23,42,.06);z-index:3}
       .panel-link:hover{background:#f8fafc;color:#64748b}
       .panel-link svg{width:14px;height:14px}
       .bookmark-wrap{position:relative;z-index:6;display:flex;justify-content:center;margin-top:22px;margin-bottom:-2px}
       .bookmark-tab{height:40px;min-width:78px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;background:#fff;border:1px solid #f3f4f6;border-bottom:none;border-radius:16px 16px 0 0;box-shadow:none}
       .bookmark-tab .panel-link{position:static;width:28px;height:28px}
+      @keyframes spin{to{transform:rotate(360deg)}}
       @media (min-width:900px){
         .stats{grid-template-columns:repeat(4,minmax(0,1fr))}
         .charts{grid-template-columns:1fr 1fr}
@@ -136,18 +143,21 @@ export default async function handler(req, res) {
         <div><div class="stat-label">Followers</div><div class="stat-value">${followers}</div></div>
       </section>
 
-      <section class="panel-shell" style="margin-top:16px;">
+      <section class="panel-shell" style="margin-top:16px;--panel-min-height:220px;" data-loading="true">
         ${activityLink}
+        <div class="panel-loader" aria-hidden="true"><span class="spinner"></span></div>
         <img class="chart" src="${baseUrl}/activity.png?v=${sectionVersion}" alt="Contribution activity chart" />
       </section>
 
       <section class="charts" style="margin-top:16px;">
-        <article class="panel-shell">
+        <article class="panel-shell" style="--panel-min-height:309px;" data-loading="true">
           ${languagesLink}
+          <div class="panel-loader" aria-hidden="true"><span class="spinner"></span></div>
           <img class="chart" src="${baseUrl}/languages.png?v=${sectionVersion}" alt="Language distribution chart" />
         </article>
-        <article class="panel-shell">
+        <article class="panel-shell" style="--panel-min-height:309px;" data-loading="true">
           ${repositoriesLink}
+          <div class="panel-loader" aria-hidden="true"><span class="spinner"></span></div>
           <img class="chart" src="${baseUrl}/repositories.png?v=${sectionVersion}" alt="Most starred repositories chart" />
         </article>
       </section>
@@ -157,6 +167,33 @@ export default async function handler(req, res) {
         <span>Generated ${escapeHtml(generatedDate)}</span>
       </footer>
     </main>
+    <script>
+      (() => {
+        const images = document.querySelectorAll('.panel-shell[data-loading="true"] img.chart');
+        images.forEach((img) => {
+          const shell = img.closest('.panel-shell[data-loading="true"]');
+          if (!shell) return;
+
+          const finish = (ok) => {
+            shell.classList.remove('is-error');
+            shell.classList.remove('is-loaded');
+            if (ok) {
+              shell.classList.add('is-loaded');
+              return;
+            }
+            shell.classList.add('is-error');
+          };
+
+          if (img.complete) {
+            finish(img.naturalWidth > 0);
+            return;
+          }
+
+          img.addEventListener('load', () => finish(true), { once: true });
+          img.addEventListener('error', () => finish(false), { once: true });
+        });
+      })();
+    </script>
   </body>
 </html>`;
 
