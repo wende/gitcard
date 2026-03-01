@@ -23,7 +23,7 @@ const CUSTOM_PALETTE = [
   '#EFD9CC',
   '#D4E4F1',
   '#EBD8DC',
-  '#D5D5D7',
+  '#C7DDD6',
   '#F6EBC8',
 ];
 
@@ -321,6 +321,7 @@ function buildActivityChartModel(timeSeries) {
 
   for (let i = 0; i < timeSeries.length; i += 7) {
     const week = timeSeries.slice(i, i + 7);
+    if (week.length < 7) continue;
     const sum = week.reduce((acc, day) => acc + day.count, 0);
     weekly.push({ date: week[0].date, count: sum });
   }
